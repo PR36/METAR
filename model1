@@ -1,0 +1,288 @@
+import pandas as pd
+import numpy as np
+import re
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+import seaborn as sns
+from sklearn.model_selection import GridSearchCV
+from itertools import combinations
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import GradientBoostingRegressor
+from datetime import datetime, timedelta
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# Load the dataset
+file_path = ''  # Replace with your file path
+df = pd.read_csv(file_path)
+
+def parse_metar_detailed(metar_str):
+    parsed_data = {
+        'wind_direction': None,
+        'wind_speed_kt': None,
+        'wind_variation': None,
+        'visibility_m': None,
+        'weather_phenomena': None,
+        'cloud_cover': None,
+        'temperature_c': None,
+        'dewpoint_c': None,
+        'pressure_hpa': None,
+        'trend': None
+    }
+
+    # Regular expressions for different METAR components
+    wind_speed_re = r'(\d{3}|VRB)(\d{2})(G\d{2})?KT'
+    wind_variation_re = r'(\d{3})V(\d{3})'
+    visibility_re = r'(\d{4})'
+    weather_phenomena_re = r'(-|\+|VC)?(MI|BC|PR|DR|BL|SH|TS|FZ)?(DZ|RA|SN|SG|IC|PE|GR|GS|UP|FG|BR|SA|HZ|DU|FU|VA|PO|SQ|FC|SS|DS)'
+    cloud_cover_re = r'(FEW|SCT|BKN|OVC)(\d{3})'
+    temp_dewpoint_re = r'M?(\d{2})/M?(\d{2})'
+    pressure_re = r'Q(\d{4})'
+    trend_re = r'(BECMG|TEMPO|PROB\d{2})'
+
+    # Parsing wind speed and direction
+    wind_match = re.search(wind_speed_re, metar_str)
+    if wind_match:
+        parsed_data['wind_direction'] = wind_match.group(1)
+        parsed_data['wind_speed_kt'] = int(wind_match.group(2))
+
+    # Parsing wind variation
+    wind_var_match = re.search(wind_variation_re, metar_str)
+    if wind_var_match:
+        parsed_data['wind_variation'] = f"{wind_var_match.group(1)}-{wind_var_match.group(2)}"
+
+    # Parsing visibility
+    visibility_match = re.search(visibility_re, metar_str)
+    if visibility_match:
+        parsed_data['visibility_m'] = int(visibility_match.group(1))
+
+    # Parsing weather phenomena
+    weather_phenomena_match = re.search(weather_phenomena_re, metar_str)
+    if weather_phenomena_match:
+        parsed_data['weather_phenomena'] = weather_phenomena_match.group(0)
+
+    # Parsing cloud cover
+    cloud_cover_match = re.search(cloud_cover_re, metar_str)
+    if cloud_cover_match:
+        parsed_data['cloud_cover'] = f"{cloud_cover_match.group(1)} at {int(cloud_cover_match.group(2)) * 100} ft"
+
+    # Parsing temperature and dew point
+    temp_dewpoint_match = re.search(temp_dewpoint_re, metar_str)
+    if temp_dewpoint_match:
+        parsed_data['temperature_c'] = int(temp_dewpoint_match.group(1))
+        parsed_data['dewpoint_c'] = int(temp_dewpoint_match.group(2))
+
+    # Parsing pressure
+    pressure_match = re.search(r'A(\d{4})|Q(\d{4})', metar_str)
+    if pressure_match:
+        if pressure_match.group(1):  # Inches of Mercury
+            parsed_data['pressure_hpa'] = int(pressure_match.group(1)) * 33.8639
+        else:  # Hectopascals
+            parsed_data['pressure_hpa'] = int(pressure_match.group(2))
+
+    # Parsing trend
+    trend_match = re.search(trend_re, metar_str)
+    if trend_match:
+        parsed_data['trend'] = trend_match.group(0)
+
+    return parsed_data
+
+# Apply the function to parse METAR data
+parsed_metar_df = df['metar'].apply(lambda x: pd.Series(parse_metar_detailed(x)))
+df = pd.concat([df, parsed_metar_df], axis=1)
+
+# Convert 'date' column to datetime and handle missing values
+df['date'] = pd.to_datetime(df['date'])
+imputer_numeric = SimpleImputer(strategy='median')
+numeric_features = ['wind_speed_kt', 'visibility_m', 'temperature_c', 'dewpoint_c', 'pressure_hpa']
+df[numeric_features] = imputer_numeric.fit_transform(df[numeric_features])
+imputer_categorical = SimpleImputer(strategy='most_frequent')
+categorical_features = ['wind_direction', 'wind_variation', 'weather_phenomena', 'cloud_cover']
+df[categorical_features] = imputer_categorical.fit_transform(df[categorical_features])
+
+# Dropping unnecessary columns
+df = df.drop(columns=['airport_id', 'metar'])
+
+# Normalizing the numeric dataset
+scaler = StandardScaler()
+df[numeric_features] = scaler.fit_transform(df[numeric_features])
+
+# Extracting the hour of the day
+df['hour'] = df['date'].dt.hour
+
+# Splitting the dataset for model training
+X = df[numeric_features + ['hour']]
+y = df['temperature_c']  # Example target variable
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train a Random Forest Regressor
+model = RandomForestRegressor(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
+
+# Predict and evaluate the model
+y_pred = model.predict(X_test)
+mse = mean_squared_error(y_test, y_pred)
+print(f"Mean Squared Error: {mse}")
+
+# Initialize a new Random Forest model
+model = RandomForestRegressor(random_state=42)
+
+# Define a grid of hyperparameters to search over
+param_grid = {
+    'n_estimators': [100, 200],
+    'max_depth': [None, 10, 20],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2]
+}
+
+# Instantiate the grid search and fit it
+grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, n_jobs=-1, verbose=2)
+grid_search.fit(X_train, y_train)
+
+# Best parameters and best score
+print(f"Best parameters: {grid_search.best_params_}")
+print(f"Best score: {grid_search.best_score_}")
+
+# Use the best estimator for further predictions
+best_model = grid_search.best_estimator_
+
+# Predict and evaluate using the best model
+y_pred = best_model.predict(X_test)
+mse = mean_squared_error(y_test, y_pred)
+print(f"Improved Mean Squared Error: {mse}")
+
+# EDA with updated dataset
+plt.figure(figsize=(15, 10))
+for i, column in enumerate(numeric_features, 1):
+    plt.subplot(3, 2, i)
+    sns.histplot(df[column], kde=True, color='green')
+    plt.title(f'Distribution of {column}')
+plt.tight_layout()
+plt.show()
+
+# Correlation Matrix
+plt.figure(figsize=(8, 6))
+sns.heatmap(df[numeric_features].corr(), annot=True)
+plt.title('Correlation Matrix')
+plt.show()
+
+# Time-Series Analysis
+plt.figure(figsize=(15, 10))
+for i, column in enumerate(numeric_features, 1):
+    plt.subplot(3, 2, i)
+    df.set_index('date')[column].plot(color='skyblue')
+    plt.title(f'Time Series of {column}')
+plt.tight_layout()
+plt.show()
+
+# Box plots
+plt.figure(figsize=(15, 10))
+for i, column in enumerate(numeric_features, 1):
+    plt.subplot(3, 2, i)
+    sns.boxplot(y=df[column], color='black')
+    plt.title(f'Box Plot of {column}')
+plt.tight_layout()
+plt.show()
+
+# Print the first few rows of the data for the numeric features
+print(df[['wind_speed_kt', 'visibility_m', 'temperature_c', 'dewpoint_c', 'pressure_hpa']].head())
+
+# Alternatively, if you want to view summary statistics of these columns:
+print(df[['wind_speed_kt', 'visibility_m', 'temperature_c', 'dewpoint_c', 'pressure_hpa']].describe())
+
+
+# Feature Engineering: Adding interaction terms
+for (feature1, feature2) in combinations(numeric_features, 2):
+    df[f'{feature1}_{feature2}'] = df[feature1] * df[feature2]
+
+# Update feature list after adding interactions
+updated_features = numeric_features + [f'{feature1}_{feature2}' for (feature1, feature2) in combinations(numeric_features, 2)]
+
+# Splitting the dataset for model training
+X = df[updated_features]
+y = df['temperature_c']  # Example target variable
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Initialize a new Random Forest model
+model = RandomForestRegressor(random_state=42)
+
+# Define a more extensive grid of hyperparameters to search over
+param_grid = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [None, 10, 20, 30],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
+}
+
+# Instantiate the grid search and fit it
+grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, n_jobs=-1, verbose=2)
+grid_search.fit(X_train, y_train)
+
+# Best parameters and best score
+print(f"Best parameters: {grid_search.best_params_}")
+print(f"Best score: {grid_search.best_score_}")
+
+# Use the best estimator for further predictions
+best_model = grid_search.best_estimator_
+
+# Predict and evaluate using the best model
+y_pred = best_model.predict(X_test)
+mse = mean_squared_error(y_test, y_pred)
+print(f"Improved Mean Squared Error: {mse}")
+
+# Apply the parsing function to the METAR data
+metar_data['parsed_metar'] = metar_data['metar'].apply(parse_metar)
+
+# Convert the dictionary of features into separate columns
+features_df = pd.json_normalize(metar_data['parsed_metar'])
+
+# Combine the features with the original dataframe
+combined_data = pd.concat([metar_data, features_df], axis=1)
+
+# Handle missing values
+combined_data.fillna(combined_data.mean(numeric_only=True), inplace=True)
+
+# Extract additional time features
+combined_data['date'] = pd.to_datetime(combined_data['date'])
+combined_data['hour'] = combined_data['date'].dt.hour
+combined_data['day'] = combined_data['date'].dt.day
+combined_data['month'] = combined_data['date'].dt.month
+combined_data['year'] = combined_data['date'].dt.year
+
+# Prepare data for the Random Forest model
+features_for_rf = ['wind_speed', 'visibility', 'air_pressure', 'hour', 'day', 'month', 'year']
+X = combined_data[features_for_rf]
+y = combined_data['temperature']
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Hyperparameter tuning for Random Forest Regressor
+param_grid = {
+    'n_estimators': [100, 200, 300, 400],
+    'learning_rate': [0.01, 0.1, 0.2],
+    'max_depth': [3, 5, 10, 15],
+    'subsample': [0.5, 0.7, 1.0]
+}
+
+# Initialize the Gradient Boosting Regressor
+gb_model = GradientBoostingRegressor(random_state=42)
+
+# Initialize GridSearchCV
+grid_search_gb = GridSearchCV(estimator=gb_model, param_grid=param_grid, cv=5, n_jobs=-1, scoring='neg_mean_squared_error')
+grid_search_gb.fit(X_train, y_train)
+
+# Use the best model found by grid search
+best_gb_model = grid_search_gb.best_estimator_
+
+# Predict and evaluate
+y_pred_gb = best_gb_model.predict(X_test)
+rmse_gb = np.sqrt(mean_squared_error(y_test, y_pred_gb))
+mae_gb = mean_absolute_error(y_test, y_pred_gb)
+cross_val_rmse_gb = np.sqrt(-cross_val_score(best_gb_model, X, y, scoring='neg_mean_squared_error', cv=5))
+
+# Print results
+print('Gradient Boosting RMSE:', rmse_gb)
+print('Gradient Boosting MAE:', mae_gb)
+print('Gradient Boosting Cross-Validated RMSE:', cross_val_rmse_gb)
